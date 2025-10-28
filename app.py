@@ -26,97 +26,110 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Styling: ultra-compact single-page dashboard
+# Ultra-compact styling
 st.markdown("""
     <style>
-    /* Remove all padding and margins */
     .main .block-container {
-        padding: 0.5rem 1rem 0rem 1rem;
+        padding: 0 0.5rem;
         max-width: 100%;
     }
-    /* Hide sidebar toggle */
-    [data-testid="stSidebar"] {display: none;}
-    /* Remove gaps between elements */
+    .main > div:first-child {
+        padding-top: 0 !important;
+    }
+    div[data-testid="stVerticalBlock"]:first-child {
+        padding-top: 0 !important;
+    }
     .element-container {margin-bottom: 0 !important;}
-    div[data-testid="stVerticalBlock"] > div {gap: 0.3rem;}
-
-    /* Card styles */
+    div[data-testid="stVerticalBlock"] > div {gap: 0.2rem;}
+    
+    /* Cards */
     .card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 8px;
-        padding: 10px 14px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-radius: 6px;
+        padding: 8px 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         height: 100%;
         color: white;
     }
     .card-white {
         background: white;
-        border-radius: 8px;
-        padding: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.07);
+        border-radius: 6px;
+        padding: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         border: 1px solid #e5e7eb;
         height: 100%;
     }
-    .card-title {
-        font-size: 0.7rem;
+    
+    /* KPIs */
+    .kpi-value {
+        font-size: 1.6rem;
         font-weight: 700;
-        margin-bottom: 4px;
+        line-height: 1;
+        margin: 2px 0;
+    }
+    .kpi-label {
+        font-size: 0.6rem;
+        opacity: 0.9;
+        font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
-
-    /* KPI tiles */
-    .kpi-value {
-        font-size: 2rem;
-        font-weight: 700;
-        line-height: 1;
-        margin: 4px 0;
-    }
-    .kpi-label {
-        font-size: 0.65rem;
-        opacity: 0.9;
-        font-weight: 500;
-    }
-
-    /* Metric boxes */
+    
+    /* Metrics */
     .metric-box {
         background: #f8fafc;
-        border-radius: 6px;
-        padding: 8px;
+        border-radius: 4px;
+        padding: 6px 8px;
         border-left: 3px solid #667eea;
-        margin-bottom: 6px;
+        margin-bottom: 4px;
     }
     .metric-title {
-        font-size: 0.65rem;
+        font-size: 0.6rem;
         color: #64748b;
         font-weight: 600;
-        margin-bottom: 2px;
+        margin-bottom: 1px;
     }
     .metric-value {
-        font-size: 1.1rem;
+        font-size: 0.95rem;
         color: #0f172a;
         font-weight: 700;
     }
-
-    /* Section headers */
+    
+    /* Headers */
     .section-header {
-        font-size: 0.8rem;
+        font-size: 0.75rem;
         font-weight: 700;
         color: #1e293b;
-        margin-bottom: 6px;
+        margin-bottom: 5px;
         display: flex;
         justify-content: space-between;
         align-items: baseline;
     }
-
-    /* Dashboard title */
+    
     h1 {
-        font-size: 1.5rem !important;
+        font-size: 1.3rem !important;
         font-weight: 800 !important;
-        margin: 0 0 0.3rem 0 !important;
+        margin: 0 0 0.2rem 0 !important;
         padding: 0 !important;
         color: #1e293b;
     }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: #ffffff;
+        border-right: 2px solid #e5e7eb;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        padding: 1rem;
+    }
+    
+    /* Hide default streamlit elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Compact dataframe */
+    .stDataFrame {font-size: 0.7rem;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -231,12 +244,9 @@ def load_dc_requests_summary():
     return df
 
 def load_master_data_for_sim():
-    """
-    Load everything needed for simulation: schedule, capacity, capability,
-    BOM, inventory, products.
-    """
     conn = get_conn()
 
+    # removed s.order_id because it doesn't exist in your DB
     schedule_sql = """
     SELECT
         s.line_id,
@@ -306,15 +316,15 @@ def load_master_data_for_sim():
     }
 
 # ---------------------------
-# 5. Scenario simulator core
+# 5. Scenario simulator core (already updated logic)
 # ---------------------------
 def simulate_request(product_id, extra_cases, due_date_str, data):
     """
-    - Try to allocate 'extra_cases' of product_id by due_date.
-    - Use unused headroom + bump flexible slots, but don't bump firm.
-    - Check BOM materials for allocated volume.
+    1. Check if already planned production before due_date covers the ask.
+    2. If not, check available capacity (without touching firm) to add more.
+    3. If capacity ok, check materials.
+    4. Otherwise give partial and what's missing.
     """
-    # Parse due date
     due_date_obj = pd.to_datetime(due_date_str).date()
 
     schedule_df = data["schedule"].copy()
@@ -323,151 +333,195 @@ def simulate_request(product_id, extra_cases, due_date_str, data):
     bom_df = data["bom"].copy()
     inv_df = data["inventory"].copy()
 
-    # Ensure production_date is datetime
     schedule_df["production_date"] = pd.to_datetime(schedule_df["production_date"])
-
-    # We'll create a helper column that's pure date (no time)
     schedule_df["prod_date_only"] = schedule_df["production_date"].dt.date
 
-    # Only consider records with prod_date_only <= due_date_obj
     sched_window = schedule_df[schedule_df["prod_date_only"] <= due_date_obj].copy()
 
-    # Which lines can actually run this product?
+    # STEP 1: already planned qty for this SKU before the due date
+    sku_sched = sched_window[sched_window["product_id"] == product_id].copy()
+    already_planned_cases = sku_sched["planned_qty_cases"].sum() if len(sku_sched) else 0
+
+    covering_rows = []
+    if len(sku_sched):
+        sku_sched_sorted = sku_sched.sort_values(["prod_date_only", "line_id"])
+        for _, r in sku_sched_sorted.iterrows():
+            covering_rows.append({
+                "line_id": r["line_id"],
+                "production_date": r["prod_date_only"],
+                "allocated_cases": int(r["planned_qty_cases"]),
+                "source": "already_planned"
+            })
+
+    if already_planned_cases >= extra_cases:
+        msg = (
+            f"Yes. Already planned before {due_date_obj} is "
+            f"{int(already_planned_cases)} cases. "
+            f"This covers {int(extra_cases)} cases. No new plan needed."
+        )
+        return {
+            "can_fulfill": True,
+            "allocated_total": int(extra_cases),
+            "remaining": 0,
+            "plan_rows": covering_rows,
+            "material_blockers": [],
+            "capacity_blockers": [],
+            "message": msg
+        }
+
+    need_after_plan = extra_cases - already_planned_cases
+
+    # STEP 2: capacity for new production for this SKU
     capable_lines = cap_df[cap_df["product_id"] == product_id]["line_id"].unique().tolist()
     if not capable_lines:
         return {
             "can_fulfill": False,
-            "allocated_total": 0,
-            "remaining": extra_cases,
-            "plan_rows": [],
+            "allocated_total": int(already_planned_cases),
+            "remaining": int(need_after_plan),
+            "plan_rows": covering_rows,
             "material_blockers": ["No line can run this product"],
             "capacity_blockers": ["No capable line found"],
-            "message": "No line can produce this SKU."
+            "message": "We cannot run this SKU on any line."
         }
 
-    remaining = extra_cases
-    plan_rows = []
+    extra_plan_rows = []
+    remaining_capacity_allocation = need_after_plan
 
-    # Iterate in date order, then per capable line
     for this_date in sorted(sched_window["prod_date_only"].unique()):
-        if remaining <= 0:
+        if remaining_capacity_allocation <= 0:
             break
 
         for line_id in capable_lines:
-            if remaining <= 0:
+            if remaining_capacity_allocation <= 0:
                 break
 
-            # get line daily capacity
-            line_cap_row = lines_df[lines_df["line_id"] == line_id]
-            if line_cap_row.empty:
+            line_info = lines_df[lines_df["line_id"] == line_id]
+            if line_info.empty:
                 continue
+            daily_capacity = int(line_info.iloc[0]["daily_capacity_cases"])
 
-            daily_capacity = int(line_cap_row.iloc[0]["daily_capacity_cases"])
-
-            # All planned runs for this line on this_date
             todays_runs = sched_window[
                 (sched_window["line_id"] == line_id) &
                 (sched_window["prod_date_only"] == this_date)
             ]
+            total_planned_now = todays_runs["planned_qty_cases"].sum() if len(todays_runs) else 0
 
-            total_planned = todays_runs["planned_qty_cases"].sum() if len(todays_runs) else 0
-            headroom = max(daily_capacity - total_planned, 0)
-
-            # Flexible capacity we can bump
-            flex_cases = todays_runs[~todays_runs["is_firm"]]["planned_qty_cases"].sum() if len(todays_runs) else 0
-
-            possible_today = headroom + flex_cases
-            if possible_today <= 0:
+            headroom = max(daily_capacity - total_planned_now, 0)
+            if headroom <= 0:
                 continue
 
-            allocate_now = min(possible_today, remaining)
+            allocate_now = min(headroom, remaining_capacity_allocation)
 
-            plan_rows.append({
+            extra_plan_rows.append({
                 "line_id": line_id,
-                "production_date": this_date,  # this_date is already a date
+                "production_date": this_date,
                 "allocated_cases": int(allocate_now),
-                "used_headroom": int(min(headroom, allocate_now)),
-                "bumped_flexible": int(max(0, allocate_now - headroom))
+                "source": "new_plan"
             })
 
-            remaining -= allocate_now
+            remaining_capacity_allocation -= allocate_now
 
-    allocated_total = extra_cases - remaining
+    new_capacity_cases = need_after_plan - remaining_capacity_allocation
+    total_possible_capacity = already_planned_cases + new_capacity_cases
+    capacity_shortfall = max(extra_cases - total_possible_capacity, 0)
 
-    # -------- MATERIAL CHECK --------
-    # For allocated_total cases, multiply BOM and compare to inventory.
+    # STEP 3: material check for only the NEW part
     mat_blockers = []
-    sku_bom = bom_df[bom_df["product_id"] == product_id].copy()
-    if len(sku_bom):
-        sku_bom["needed_qty"] = sku_bom["qty_per_case"] * allocated_total
-        merged = pd.merge(
-            sku_bom,
-            inv_df,
-            on="material_id",
-            how="left"
-        )
-        for _, r in merged.iterrows():
-            need = float(r["needed_qty"])
-            have = float(r["on_hand_qty"]) if pd.notnull(r["on_hand_qty"]) else 0.0
-            if need > have:
-                shortage = need - have
-                mat_blockers.append(
-                    f"{r['material_name']} short by {shortage:,.0f} (lead {r['supplier_lead_time_days']}d)"
-                )
-    else:
-        mat_blockers.append("No BOM for this SKU.")
+    if new_capacity_cases > 0:
+        sku_bom = bom_df[bom_df["product_id"] == product_id].copy()
+        if len(sku_bom):
+            sku_bom["needed_qty"] = sku_bom["qty_per_case"] * new_capacity_cases
+            merged = pd.merge(sku_bom, inv_df, on="material_id", how="left")
+            for _, r in merged.iterrows():
+                need = float(r["needed_qty"])
+                have = float(r["on_hand_qty"]) if pd.notnull(r["on_hand_qty"]) else 0.0
+                lead = r["supplier_lead_time_days"]
+                if need > have:
+                    shortage = need - have
+                    mat_blockers.append(
+                        f"{r['material_name']} short by {shortage:,.0f} (lead {lead}d)"
+                    )
+        else:
+            mat_blockers.append("No BOM for this SKU.")
 
-    # -------- CAPACITY BLOCKERS --------
+    if capacity_shortfall == 0 and len(mat_blockers) == 0:
+        msg = (
+            f"Yes. We can cover {int(extra_cases)} cases by {due_date_obj}. "
+            f"{int(already_planned_cases)} already planned. "
+            f"The rest can be added with free capacity. Materials are OK."
+        )
+        plan_rows = []
+        plan_rows.extend(covering_rows)
+        plan_rows.extend(extra_plan_rows)
+
+        return {
+            "can_fulfill": True,
+            "allocated_total": int(extra_cases),
+            "remaining": 0,
+            "plan_rows": plan_rows,
+            "material_blockers": [],
+            "capacity_blockers": [],
+            "message": msg
+        }
+
+    # STEP 4: partial only
+    feasible_new_cases = new_capacity_cases
+    if len(mat_blockers) > 0:
+        # simple rule: material issue => cannot confirm the new part
+        feasible_new_cases = 0
+
+    total_feasible = already_planned_cases + feasible_new_cases
+    remaining_after_feasible = max(extra_cases - total_feasible, 0)
+
+    msg_bits = []
+    if total_feasible > 0:
+        msg_bits.append(
+            f"We can cover {int(total_feasible)} cases by {due_date_obj}."
+        )
+    if remaining_after_feasible > 0:
+        msg_bits.append(
+            f"The remaining {int(remaining_after_feasible)} cases cannot be done on time."
+        )
+    if capacity_shortfall > 0:
+        msg_bits.append("Capacity is not enough for full ask.")
+    if len(mat_blockers) > 0:
+        msg_bits.append("Material risk: " + "; ".join(mat_blockers))
+
+    final_msg = " ".join(msg_bits)
+
     cap_blockers = []
-    if remaining > 0:
+    if capacity_shortfall > 0:
         cap_blockers.append(
-            f"Short {remaining} cases before {due_date_obj}"
+            f"Short {int(capacity_shortfall)} cases before {due_date_obj}"
         )
 
-    # -------- MESSAGE FOR DC --------
-    if remaining <= 0 and len(mat_blockers) == 0:
-        message = (
-            f"✅ We can produce all {extra_cases:,} cases by {due_date_obj} "
-            f"without impacting firm orders. Approved."
-        )
-        can_fulfill = True
-    else:
-        partial = allocated_total
-        bits = []
-        if partial > 0:
-            bits.append(f"⚠ We can cover {partial:,} cases by {due_date_obj}.")
-        if remaining > 0:
-            bits.append(
-                f"Remaining {remaining:,} cases need later dates or bumping firm slots."
-            )
-        if mat_blockers:
-            bits.append("Material constraints: " + "; ".join(mat_blockers))
-        message = " ".join(bits)
-        can_fulfill = False
+    # build plan rows we show as 'feasible'
+    partial_plan_rows = []
+    partial_plan_rows.extend(covering_rows)
+    if feasible_new_cases > 0 and len(mat_blockers) == 0:
+        partial_plan_rows.extend(extra_plan_rows)
 
     return {
-        "can_fulfill": can_fulfill,
-        "allocated_total": allocated_total,
-        "remaining": remaining,
-        "plan_rows": plan_rows,
+        "can_fulfill": False,
+        "allocated_total": int(total_feasible),
+        "remaining": int(remaining_after_feasible),
+        "plan_rows": partial_plan_rows,
         "material_blockers": mat_blockers,
         "capacity_blockers": cap_blockers,
-        "message": message
+        "message": final_msg
     }
 
 # ---------------------------
-# 6. Gantt / calendar view
+# 6. Gantt chart
 # ---------------------------
 
 def build_gantt_figure(schedule_df):
     if schedule_df.empty:
         return None
 
-    # Standardize production_date as Timestamp
     df = schedule_df.copy()
     df["production_date"] = pd.to_datetime(df["production_date"])
 
-    # show ~10 day horizon from earliest date
     min_date = df["production_date"].min()
     max_date = min_date + timedelta(days=9)
 
@@ -478,8 +532,8 @@ def build_gantt_figure(schedule_df):
     lines = sorted(df["line_name"].unique(), reverse=True)
 
     fig = go.Figure()
-    firm_color = "#10b981"      # green
-    flexible_color = "#fbbf24"  # yellow
+    firm_color = "#10b981"
+    flexible_color = "#fbbf24"
 
     for _, row in df.iterrows():
         prod_date = row["production_date"]
@@ -494,10 +548,7 @@ def build_gantt_figure(schedule_df):
             y=[row["line_name"]],
             base=start_dt,
             orientation='h',
-            marker=dict(
-                color=color,
-                line=dict(color='#1e293b', width=0.5)
-            ),
+            marker=dict(color=color, line=dict(color='#1e293b', width=0.5)),
             text=f"{row['product_name'][:15]}<br>{int(row['planned_qty_cases'])}c",
             textposition='inside',
             textfont=dict(size=8, color='white', family='monospace'),
@@ -516,11 +567,11 @@ def build_gantt_figure(schedule_df):
 
     fig.update_layout(
         barmode='overlay',
-        height=260,
-        margin=dict(l=70, r=10, t=20, b=30),
+        height=220,
+        margin=dict(l=60, r=10, t=15, b=25),
         plot_bgcolor='#f8fafc',
         paper_bgcolor='white',
-        font=dict(size=10, color='#1e293b'),
+        font=dict(size=9, color='#1e293b'),
         xaxis=dict(
             title='',
             type='date',
@@ -541,34 +592,85 @@ def build_gantt_figure(schedule_df):
     )
     return fig
 
-
 # ---------------------------
-# 7. Load dashboard data
+# 7. Load data
 # ---------------------------
 
 schedule_df = load_schedule_df()
 flexible_slots, pending_dc, active_lines, avg_util, util_df = load_kpi_data()
 inv_top = load_inventory_summary()
 dc_top = load_dc_requests_summary()
-sim_data = load_master_data_for_sim()  # for simulator dropdowns etc.
+sim_data = load_master_data_for_sim()
 
 # ---------------------------
-# 8. DASHBOARD LAYOUT
+# 8. SIDEBAR SIMULATOR
 # ---------------------------
 
-# HEADER ROW
+with st.sidebar:
+    st.markdown("### 🚀 Promo Request Simulation")
+    
+    product_options = {
+        row["product_name"]: row["product_id"]
+        for _, row in sim_data["products"].iterrows()
+    }
+    product_display_names = list(product_options.keys())
+    selected_product_name = st.selectbox("Product", options=product_display_names, key="sim_prod")
+    selected_product_id = product_options[selected_product_name]
+
+    requested_qty = st.number_input("Requested cases", min_value=100, max_value=10000000, step=500, value=18000, key="sim_qty")
+    due_date_input = st.date_input("Due date", value=date.today() + timedelta(days=3), key="sim_due")
+
+    run_it = st.button("🔍 Simulate", key="sim_button", use_container_width=True)
+
+    if run_it:
+        result = simulate_request(
+            product_id=selected_product_id,
+            extra_cases=int(requested_qty),
+            due_date_str=str(due_date_input),
+            data=sim_data
+        )
+
+        st.markdown("---")
+        st.markdown("**Result:**")
+        st.info(result["message"])
+
+        if len(result["plan_rows"]) > 0:
+            plan_df = pd.DataFrame(result["plan_rows"])
+            plan_df = plan_df.rename(columns={
+                "line_id": "Line",
+                "production_date": "Date",
+                "allocated_cases": "Cases",
+                "source": "Source"
+            })
+            st.dataframe(plan_df, use_container_width=True, height=200)
+
+        if result["material_blockers"]:
+            st.markdown("**⚠️ Material Constraints:**")
+            for m in result["material_blockers"]:
+                st.markdown(f"- {m}")
+
+        if result["capacity_blockers"]:
+            st.markdown("**⚙️ Capacity Notes:**")
+            for c in result["capacity_blockers"]:
+                st.markdown(f"- {c}")
+
+# ---------------------------
+# 9. MAIN DASHBOARD
+# ---------------------------
+
+# Header
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
     st.markdown("# 🏭 Factory Control Tower")
 with col_h2:
     st.markdown(
-        f"<div style='text-align:right;padding-top:6px;'>"
-        f"<span style='font-size:0.7rem;color:#64748b;'>Updated: {datetime.now().strftime('%H:%M')}</span>"
+        f"<div style='text-align:right;padding-top:4px;'>"
+        f"<span style='font-size:0.65rem;color:#64748b;'>Updated: {datetime.now().strftime('%H:%M')}</span>"
         f"</div>",
         unsafe_allow_html=True
     )
 
-# KPI ROW
+# KPIs
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown(f"""
@@ -599,11 +701,11 @@ with col4:
     </div>
     """, unsafe_allow_html=True)
 
-# MAIN CHART ROW (Gantt)
+# Gantt chart
 st.markdown('<div class="card-white">', unsafe_allow_html=True)
 st.markdown(
     '<div class="section-header">📊 Production Schedule — Next 10 Days'
-    '<span style="font-size:0.65rem;font-weight:500;color:#64748b;">Green = firm / Yellow = flexible</span>'
+    '<span style="font-size:0.6rem;font-weight:500;color:#64748b;">Green = firm / Yellow = flexible</span>'
     '</div>',
     unsafe_allow_html=True
 )
@@ -615,10 +717,9 @@ else:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 st.markdown('</div>', unsafe_allow_html=True)
 
-# BOTTOM ROW: 4 columns (Hotspots, DC Req, Materials, Simulator)
-col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+# Bottom row
+col_b1, col_b2, col_b3 = st.columns(3)
 
-# ---- CAPACITY HOTSPOTS ----
 with col_b1:
     st.markdown('<div class="card-white">', unsafe_allow_html=True)
     st.markdown('<div class="section-header">🔧 Capacity Hotspots</div>', unsafe_allow_html=True)
@@ -635,7 +736,6 @@ with col_b1:
         st.info("No data")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ---- DC REQUESTS ----
 with col_b2:
     st.markdown('<div class="card-white">', unsafe_allow_html=True)
     st.markdown('<div class="section-header">📦 DC Requests</div>', unsafe_allow_html=True)
@@ -652,7 +752,6 @@ with col_b2:
         st.info("No requests")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ---- CRITICAL MATERIALS ----
 with col_b3:
     st.markdown('<div class="card-white">', unsafe_allow_html=True)
     st.markdown('<div class="section-header">⚠️ Critical Materials</div>', unsafe_allow_html=True)
@@ -667,81 +766,4 @@ with col_b3:
             """, unsafe_allow_html=True)
     else:
         st.info("No data")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ---- SIMULATOR ----
-with col_b4:
-    st.markdown('<div class="card-white">', unsafe_allow_html=True)
-    st.markdown('<div class="section-header">🚀 Promo Request Simulation</div>', unsafe_allow_html=True)
-
-    # product dropdown from sim_data["products"]
-    product_options = {
-        row["product_name"]: row["product_id"]
-        for _, row in sim_data["products"].iterrows()
-    }
-    product_display_names = list(product_options.keys())
-    selected_product_name = st.selectbox(
-        "Product",
-        options=product_display_names,
-        key="sim_prod",
-        help="Which SKU is the DC asking for?"
-    )
-    selected_product_id = product_options[selected_product_name]
-
-    requested_qty = st.number_input(
-        "Requested cases",
-        min_value=100,
-        max_value=100000,
-        step=500,
-        value=18000,
-        key="sim_qty"
-    )
-
-    due_date_input = st.date_input(
-        "Due date",
-        value=date.today() + timedelta(days=3),
-        key="sim_due"
-    )
-
-    run_it = st.button("Simulate", key="sim_button")
-
-    if run_it:
-        result = simulate_request(
-            product_id=selected_product_id,
-            extra_cases=int(requested_qty),
-            due_date_str=str(due_date_input),
-            data=sim_data
-        )
-
-        st.markdown(
-            f"<div style='font-size:0.7rem;font-weight:600;color:#1e293b;margin-top:6px;'>Result</div>",
-            unsafe_allow_html=True
-        )
-        st.write(result["message"])
-
-        if len(result["plan_rows"]) > 0:
-            plan_df = pd.DataFrame(result["plan_rows"])
-            plan_df = plan_df.rename(columns={
-                "line_id": "Line",
-                "production_date": "Date",
-                "allocated_cases": "Planned (cases)",
-                "used_headroom": "Free Cap Used",
-                "bumped_flexible": "Flex Bumped"
-            })
-            st.dataframe(
-                plan_df,
-                use_container_width=True,
-                height=140
-            )
-
-        if result["material_blockers"]:
-            st.markdown("<div style='font-size:0.7rem;color:#dc2626;font-weight:600;'>Material constraints</div>", unsafe_allow_html=True)
-            for m in result["material_blockers"]:
-                st.markdown(f"- {m}")
-
-        if result["capacity_blockers"]:
-            st.markdown("<div style='font-size:0.7rem;color:#f59e0b;font-weight:600;'>Capacity notes</div>", unsafe_allow_html=True)
-            for c in result["capacity_blockers"]:
-                st.markdown(f"- {c}")
-
     st.markdown('</div>', unsafe_allow_html=True)
